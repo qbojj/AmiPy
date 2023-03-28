@@ -31,7 +31,7 @@
 
 #define AMIPY_PLUGIN_VERSION_MAJOR		1
 #define AMIPY_PLUGIN_VERSION_MINOR		0	//	0..99
-#define AMIPY_PLUGIN_VERSION_RELEASE	1	//	0..99
+#define AMIPY_PLUGIN_VERSION_RELEASE	2	//	0..99
 
 // These are the only two lines you need to change
 #define PLUGIN_NAME "AmiPy: AmiBroker-Python integration"

@@ -6,6 +6,8 @@
 
 #include "AmiPyIsolation.h"
 
+#include <map>
+
 std::atomic_bool g_bIsClosing = false;
 
 PyInterpreterState *g_pMainIS;
@@ -48,13 +50,63 @@ static CStringA GetLastErrorString()
 	return msg;
 }
 
+#define VAL_AND_NAME( v ) { v, #v }
+
+static const std::map<DWORD, const char *> exception_names{
+	VAL_AND_NAME( EXCEPTION_ACCESS_VIOLATION ),
+	VAL_AND_NAME( EXCEPTION_ARRAY_BOUNDS_EXCEEDED ),
+	VAL_AND_NAME( EXCEPTION_BREAKPOINT ),
+	VAL_AND_NAME( EXCEPTION_DATATYPE_MISALIGNMENT ),
+	VAL_AND_NAME( EXCEPTION_FLT_DENORMAL_OPERAND ),
+	VAL_AND_NAME( EXCEPTION_FLT_DIVIDE_BY_ZERO ),
+	VAL_AND_NAME( EXCEPTION_FLT_INEXACT_RESULT ),
+	VAL_AND_NAME( EXCEPTION_FLT_INVALID_OPERATION ),
+	VAL_AND_NAME( EXCEPTION_FLT_OVERFLOW ),
+	VAL_AND_NAME( EXCEPTION_FLT_STACK_CHECK ),
+	VAL_AND_NAME( EXCEPTION_FLT_UNDERFLOW ),
+	VAL_AND_NAME( EXCEPTION_GUARD_PAGE ),
+	VAL_AND_NAME( EXCEPTION_ILLEGAL_INSTRUCTION ),
+	VAL_AND_NAME( EXCEPTION_IN_PAGE_ERROR ),
+	VAL_AND_NAME( EXCEPTION_INT_DIVIDE_BY_ZERO ),
+	VAL_AND_NAME( EXCEPTION_INT_OVERFLOW ),
+	VAL_AND_NAME( EXCEPTION_INVALID_DISPOSITION ),
+	VAL_AND_NAME( EXCEPTION_INVALID_HANDLE ),
+	VAL_AND_NAME( EXCEPTION_NONCONTINUABLE_EXCEPTION ),
+	VAL_AND_NAME( EXCEPTION_PRIV_INSTRUCTION ),
+	VAL_AND_NAME( EXCEPTION_SINGLE_STEP ),
+	VAL_AND_NAME( EXCEPTION_STACK_OVERFLOW ),
+	VAL_AND_NAME( STATUS_UNWIND_CONSOLIDATE ),
+};
+
 static UINT MainPythonThreadExecutor( LPVOID pParam )
 {
 	(void)pParam;
 
 	gLogger( "MainPythonThread started", Logger::MSG_DEBUG );
 
-	bProperlyInitialized = StartAmiPy();
+	char msgBuff[ 1024 ] = "";
+
+	__try
+	{
+		bProperlyInitialized = StartAmiPy();
+
+		volatile int *a = 0;
+		*a = 1;
+	}
+	__except( EXCEPTION_EXECUTE_HANDLER )
+	{
+		auto it = exception_names.find( GetExceptionCode() );
+
+		sprintf_s( msgBuff, sizeof(msgBuff), "Exception during python initialization (%s)", 
+			it != exception_names.end() ? it->second : "unknown" );
+
+		OutputDebugStringA( msgBuff );
+		gLogger( msgBuff, Logger::MSG_ERROR );
+
+		bProperlyInitialized = false;
+		bInitError = true;
+		oInitErrorMsg = msgBuff;
+	}
 
 	gLogger( "Setting initialized event", Logger::MSG_DEBUG );
 
@@ -67,7 +119,11 @@ static UINT MainPythonThreadExecutor( LPVOID pParam )
 		return 1;
 	}
 
-	//return 0;
+	if( !bProperlyInitialized )
+	{
+		gLogger( "AmiPy was not initialized successfully => stopping MainPythonThread", Logger::MSG_WARNING );
+		return 1;
+	}
 
 	gLogger( "waiting for close event", Logger::MSG_DEBUG );
 
@@ -75,21 +131,20 @@ static UINT MainPythonThreadExecutor( LPVOID pParam )
 
 	if( ret != WAIT_OBJECT_0 )
 	{
-		CStringA msg = "Error: waiting for close event: ";
+		sprintf_s( 
+			msgBuff, sizeof(msgBuff), 
+			"Error: waiting for close event: %s",
+			ret == WAIT_ABANDONED ? "abandoned" :
+				ret == WAIT_TIMEOUT ? "timeout" :
+				ret == WAIT_FAILED ? "failed" : "" );
 
-		msg += ret == WAIT_ABANDONED ? "abandoned" :
-			ret == WAIT_TIMEOUT ? "timeout" : 
-			ret == WAIT_FAILED ? "failed" : "";
-
-		OutputDebugStringA( msg );
-		gLogger( msg, Logger::MSG_ERROR );
+		OutputDebugStringA( msgBuff );
+		gLogger( msgBuff, Logger::MSG_ERROR );
 
 		return false;
 	}
 
 	gLogger( "close event recived", Logger::MSG_DEBUG );
-
-	EndAmiPy();
 
 	gLogger( "MainPythonThread stopped", Logger::MSG_DEBUG );
 	return 0;
@@ -271,12 +326,18 @@ static bool StartPython()
 {
 	gLogger( "Starting python", Logger::MSG_DEBUG );
 
+	gLogger( "Checking if valid python version", Logger::MSG_DEBUG );
 	if( GetPythonVersionHex() < Py_LIMITED_API ) INIT_ERROR_AND_EXIT( "Python version is below required" );
 
+	gLogger( "Redirecting standard streams", Logger::MSG_DEBUG );
 	if( !RedirectStdIO() ) INIT_ERROR_AND_EXIT( "Cannot redirect std IO" );
+	
+	gLogger( "Initializing AmiPy module", Logger::MSG_DEBUG );
 	if( !InitAmiPyModule() ) INIT_ERROR_AND_EXIT( "Cannot import AmiPy Module" );
 
+	gLogger( "Initializing python...", Logger::MSG_DEBUG );
 	Py_InitializeEx( 0 );
+	gLogger( "Initializing python exited", Logger::MSG_DEBUG );
 
 	if( !Py_IsInitialized() )
 	{

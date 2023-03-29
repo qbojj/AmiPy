@@ -89,9 +89,6 @@ static UINT MainPythonThreadExecutor( LPVOID pParam )
 	__try
 	{
 		bProperlyInitialized = StartAmiPy();
-
-		volatile int *a = 0;
-		*a = 1;
 	}
 	__except( EXCEPTION_EXECUTE_HANDLER )
 	{

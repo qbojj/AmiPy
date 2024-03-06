@@ -1,84 +1,83 @@
 #include "StdAfx.h"
+
 #include "AmiPyRun.h"
 
 #include "AmiPyConversions.h"
 
 #undef _Py_static_string_init
-#define _Py_static_string_init( name ) { 0, name, 0 }
+#define _Py_static_string_init(name)                                           \
+  { 0, name, 0 }
 
 #include <string>
 using namespace std;
 
-string GetFileContent( FILE *fh )
-{
-	fseek( fh, 0L, SEEK_END );
-	size_t siz = ftell( fh );
-	fseek( fh, 0L, SEEK_SET );
+string GetFileContent(FILE *fh) {
+  fseek(fh, 0L, SEEK_END);
+  size_t siz = ftell(fh);
+  fseek(fh, 0L, SEEK_SET);
 
-	if( siz == 0 ) return "";
+  if (siz == 0)
+    return "";
 
-	string res( siz + 1, '\0' );
-	fread( &res[0], 1, siz, fh );
+  string res(siz + 1, '\0');
+  fread(&res[0], 1, siz, fh);
 
-	return res;
+  return res;
 }
 
-int AmiPyRun_File(
-	FILE *fh,
-	const char *fileName,
-	PyObject *dict,
-	bool closeit )
-{
-	ASSERT( fh );
-	ASSERT( fileName != NULL );
-	ASSERT( dict != NULL );
+int AmiPyRun_File(FILE *fh, const char *fileName, PyObject *dict,
+                  bool closeit) {
+  ASSERT(fh);
+  ASSERT(fileName != NULL);
+  ASSERT(dict != NULL);
 
-	PyObject *res, *code, *f;
-	string content;
+  PyObject *res, *code, *f;
+  string content;
 
-	content = GetFileContent( fh );
-	if( closeit ) fclose( fh );
-	
-	code = Py_CompileString( content.c_str(), fileName, Py_file_input );
-	if( !code )	return -1;
+  content = GetFileContent(fh);
+  if (closeit)
+    fclose(fh);
 
-	bool set_file_name = false, set_cached = false;
-	int ret = -1;
-	if( PyDict_GetItemString( dict, "__file__" ) == NULL )
-	{
-		f = PyUnicode_DecodeFSDefault( fileName );
-		if( f == NULL ) goto done;
+  code = Py_CompileString(content.c_str(), fileName, Py_file_input);
+  if (!code)
+    return -1;
 
-		if( PyDict_SetItemString( dict, "__file__", f ) < 0 )
-		{
-			//PRINT_ERROR( "Couldnot set python __file__" );
-			Py_DecRef( f );
-			goto done;
-		}
+  bool set_file_name = false, set_cached = false;
+  int ret = -1;
+  if (PyDict_GetItemString(dict, "__file__") == NULL) {
+    f = PyUnicode_DecodeFSDefault(fileName);
+    if (f == NULL)
+      goto done;
 
-		Py_DecRef( f );
-		set_file_name = true;
-	}
+    if (PyDict_SetItemString(dict, "__file__", f) < 0) {
+      // PRINT_ERROR( "Couldnot set python __file__" );
+      Py_DecRef(f);
+      goto done;
+    }
 
-	if( PyDict_GetItemString( dict, "__cached__" ) == NULL )
-	{
-		if( PyDict_SetItemString( dict, "__cached__", Py_None ) < 0 )
-		{
-			//PRINT_ERROR( "Couldnot set python __cached__" );
-			goto done;
-		}
+    Py_DecRef(f);
+    set_file_name = true;
+  }
 
-		set_cached = true;
-	}
+  if (PyDict_GetItemString(dict, "__cached__") == NULL) {
+    if (PyDict_SetItemString(dict, "__cached__", Py_None) < 0) {
+      // PRINT_ERROR( "Couldnot set python __cached__" );
+      goto done;
+    }
 
-	res = PyEval_EvalCode( code, dict, dict );
-	if( res ) Py_DecRef( res );
+    set_cached = true;
+  }
 
-	ret = 0;
+  res = PyEval_EvalCode(code, dict, dict);
+  if (res)
+    Py_DecRef(res);
+
+  ret = 0;
 done:
-	if( set_file_name ) PyDict_DelItemString( dict, "__file__" );
-	if( set_cached )    PyDict_DelItemString( dict, "__cached__" );
+  if (set_file_name)
+    PyDict_DelItemString(dict, "__file__");
+  if (set_cached)
+    PyDict_DelItemString(dict, "__cached__");
 
-	return ret;
-	
+  return ret;
 }

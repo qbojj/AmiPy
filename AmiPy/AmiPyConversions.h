@@ -11,26 +11,26 @@ AmiVar ObjToAmiVar(PyObject *variable);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class ASCIICapsule
-{
+class ASCIICapsule {
 public:
-	ASCIICapsule();
-	ASCIICapsule( PyObject *pASCIIObj, bool Steal );
-	ASCIICapsule( const ASCIICapsule & );
-	~ASCIICapsule();
+  ASCIICapsule();
+  ASCIICapsule(PyObject *pASCIIObj, bool Steal);
+  ASCIICapsule(const ASCIICapsule &);
+  ~ASCIICapsule();
 
-	const char *Data() const;
-	operator const char *() const;
+  const char *Data() const;
+  operator const char *() const;
 
-	static ASCIICapsule FromUnicode( PyObject *pUnicode, bool Steal );
-	static ASCIICapsule FromObject( PyObject *pObj, bool Steal );
+  static ASCIICapsule FromUnicode(PyObject *pUnicode, bool Steal);
+  static ASCIICapsule FromObject(PyObject *pObj, bool Steal);
+
 private:
-	PyObject *m_pASCIIObj = NULL;
+  PyObject *m_pASCIIObj = NULL;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//extern PyInterpreterState *g_pMainIS;
+// extern PyInterpreterState *g_pMainIS;
 extern std::atomic_bool g_bIsClosing;
 
 bool EnsureInitialized();

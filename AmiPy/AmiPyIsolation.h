@@ -3,15 +3,14 @@
 // must hold GIL
 void AmiPyIsolation_ClearAll();
 
-PyObject *AmiPyIsolation_GetDict( const char *ctx );
+PyObject *AmiPyIsolation_GetDict(const char *ctx);
 
-class GilGuard
-{
+class GilGuard {
 public:
-	GilGuard( const char *ctx );
-	~GilGuard();
+  GilGuard(const char *ctx);
+  ~GilGuard();
 
 protected:
-	PyThreadState *m_pThreadState;
-	PyGILState_STATE m_oGILState;
+  PyThreadState *m_pThreadState;
+  PyGILState_STATE m_oGILState;
 };

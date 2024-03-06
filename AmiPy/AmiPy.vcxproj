@@ -122,15 +122,6 @@
       </AdditionalOptions>
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
     </Link>
-    <PostBuildEvent>
-      <Command>set AmiPath=F:\AmiBroker64\
-
-echo copy $(OutDir)AmiPy.dll %AmiPath%Plugins\
-copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
-    </PostBuildEvent>
-    <PostBuildEvent>
-      <Message>Copy .dll to AmiBroker Plugins dir</Message>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -163,13 +154,6 @@ copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
       </AdditionalOptions>
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
     </Link>
-    <PostBuildEvent>
-      <Message>Copy .dll to AmiBroker Plugins dir</Message>
-      <Command>set AmiPath=F:\AmiBroker64\
-
-echo copy $(OutDir)AmiPy.dll %AmiPath%Plugins\
-copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -205,15 +189,6 @@ copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
       </AdditionalOptions>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
-    <PostBuildEvent>
-      <Command>set AmiPath=F:\AmiBroker64\
-
-echo copy $(OutDir)AmiPy.dll %AmiPath%Plugins\
-copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
-    </PostBuildEvent>
-    <PostBuildEvent>
-      <Message>Copy .dll to AmiBroker Plugins dir</Message>
-    </PostBuildEvent>
     <CustomBuildStep>
       <Command>
       </Command>
@@ -257,13 +232,6 @@ copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
       </AdditionalOptions>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
-    <PostBuildEvent>
-      <Message>Copy .dll to AmiBroker Plugins dir</Message>
-      <Command>set AmiPath=F:\AmiBroker64\
-
-echo copy $(OutDir)AmiPy.dll %AmiPath%Plugins\
-copy $(OutDir)AmiPy.dll %AmiPath%Plugins\</Command>
-    </PostBuildEvent>
     <CustomBuildStep>
       <Command>
       </Command>

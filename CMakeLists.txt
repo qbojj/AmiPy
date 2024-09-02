@@ -10,7 +10,7 @@ find_package(Python COMPONENTS Development.SABIModule NumPy REQUIRED)
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 file(GLOB_RECURSE HEADERS "include/*.h")
 
-add_library(AmiPy SHARED ${SOURCES} ${HEADERS})
+add_library(AmiPy MODULE ${SOURCES} ${HEADERS})
 target_link_libraries(AmiPy PRIVATE Python::SABIModule Python::NumPy)
 target_include_directories(AmiPy PUBLIC include PRIVATE extern/include)
 target_compile_definitions(AmiPy PUBLIC
@@ -34,3 +34,14 @@ target_precompile_headers(AmiPy PRIVATE
   <Plugin_Extended.h>
   <framework.h>
 )
+set_target_properties(AmiPy PROPERTIES CXX_VISIBILITY_PRESET hidden)
+
+install(TARGETS AmiPy
+RUNTIME
+    COMPONENT Runtime
+    DESTINATION ./
+LIBRARY
+    COMPONENT Runtime
+    DESTINATION ./
+)
+install(FILES LICENCE.txt DESTINATION ./)

@@ -1,5 +1,3 @@
-#include "StdAfx.h"
-
 #include "Logger.h"
 
 #include "AmiPyConversions.h"
@@ -7,42 +5,41 @@
 
 #include "inih.h"
 
+#include <chrono>
+#include <mutex>
+#include <ratio>
+#include <string>
+#include <format>
+#include <cstdio>
+#include <thread>
+
 Logger gLogger;
 
-LARGE_INTEGER TimeMeasurer::m_oTimerFreq = {{0, 0}};
-
 TimeMeasurer::TimeMeasurer(bool init) {
-  if (m_oTimerFreq.QuadPart == 0)
-    QueryPerformanceFrequency(&m_oTimerFreq);
-
   if (init)
     start();
 }
 
-void TimeMeasurer::start() { QueryPerformanceCounter(&m_oStartTime); }
+void TimeMeasurer::start() { m_oStartTime = clock::now(); }
 
-QWORD TimeMeasurer::getTimeDiff() {
-  LARGE_INTEGER t;
-  QueryPerformanceCounter(&t);
-
-  return (t.QuadPart - m_oStartTime.QuadPart) * 1000000 / m_oTimerFreq.QuadPart;
+std::uint64_t TimeMeasurer::getTimeDiff() {
+  auto now = clock::now();
+  auto diff = now - m_oStartTime;
+  auto micros = std::chrono::duration_cast<std::chrono::microseconds>(diff);
+  return static_cast<std::uint64_t>(micros.count());
 }
 
-CStringA TimeMeasurer::getAsString() {
-  QWORD Elapsed = getTimeDiff();
+std::string TimeMeasurer::getAsString() {
+  auto Elapsed = getTimeDiff();
 
-  CStringA Ret;
-
-  Ret.Format("%llu.%3.3llu ms", Elapsed / 1000, Elapsed % 1000);
-
-  return Ret;
+  return std::format("{}.{:03} ms", Elapsed / 1000, Elapsed % 1000);
 }
 
 Logger::Logger() : m_oTM(false) { m_pLogFile = NULL; }
 
 Logger::~Logger() {
   if (m_pLogFile)
-    fclose(m_pLogFile);
+    std::fclose(m_pLogFile);
 }
 
 const char DefaultINIfile[] = R"INI(
@@ -66,27 +63,31 @@ bool Logger::_Initialize() {
   INIReader ini(INI_PATH);
   if (ini.ParseError() == -1) {
     bDefaultConfig = true;
-    FILE *f = fopen(INI_PATH, "w");
+    FILE *f = std::fopen(INI_PATH, "w");
 
     if (f) {
-      fputs(DefaultINIfile, f);
-      fclose(f);
+      std::fputs(DefaultINIfile, f);
+      std::fclose(f);
     }
 
     ini = INIReader(INI_PATH);
   }
 
   if (ini.ParseError() == -1) {
+#ifdef _WIN32
     OutputDebugStringA("could not open or create config file (" INI_PATH ")\n");
+#endif
     AmiError("could not open or create config file (" INI_PATH ")\n");
     return false;
   }
 
   if (ini.ParseError() > 0) {
-    CStringA res;
-    res.Format("ini file parse error in line %d\n", ini.ParseError());
-    OutputDebugStringA(res);
-    AmiError(res);
+    std::string res;
+    res = "ini file parse error in line " + std::to_string(ini.ParseError()) + "\n";
+#ifdef _WIN32
+    OutputDebugStringA(res.data());
+#endif
+    AmiError(res.data());
   }
 
   std::string logPath = (ini.ParseError() >= 0)
@@ -97,8 +98,10 @@ bool Logger::_Initialize() {
 
   if (!m_pLogFile) {
     std::string msg = "could not open log file (" + logPath + ")\n";
-    OutputDebugStringA(msg.c_str());
-    AmiError(msg.c_str());
+#ifdef _WIN32
+    OutputDebugStringA(msg.data());
+#endif
+    AmiError(msg.data());
     return false;
   }
 
@@ -126,7 +129,8 @@ bool Logger::_Initialize() {
   PluginInfo PI;
   GetPluginInfo(&PI);
 
-  CTime StartTime = CTime::GetTickCount();
+  auto startTime = std::chrono::system_clock::now();
+  std::string StartTime = std::format("{:%Y-%m-%d %H:%M:%S}", startTime);
 
   AmiVar args[1] = {SetVal(0)};
 
@@ -137,7 +141,7 @@ bool Logger::_Initialize() {
     fAmiVer = AmiVer.val;
   FreeAmiVar(AmiVer);
 
-  fprintf(m_pLogFile,
+  std::fprintf(m_pLogFile,
           "AmiPy %d.%d.%d log:\n"
           "\tAB: %.2f\n"
           "\tPY: %s\n"
@@ -149,7 +153,7 @@ bool Logger::_Initialize() {
           PI.nVersion % 100, fAmiVer, Py_GetVersion(), msgMaskStr.c_str(),
           !m_bFlush ? "\tLog file is NOT flushed: log file can be incomplete\n"
                     : "",
-          (LPCSTR)StartTime.Format("%Y-%m-%d %H:%M:%S"));
+          StartTime.data());
 
   if (ini.ParseError()) {
     std::string err;
@@ -164,14 +168,14 @@ bool Logger::_Initialize() {
       err = "error in line " + std::to_string(ini.ParseError());
     };
 
-    fprintf(m_pLogFile, "Ini file parse error: %d - %s\n", ini.ParseError(),
+    std::fprintf(m_pLogFile, "Ini file parse error: %d - %s\n", ini.ParseError(),
             err.c_str());
   } else if (bDefaultConfig) {
-    fprintf(m_pLogFile,
+    std::fprintf(m_pLogFile,
             "Ini file wasn't present: using default configuration\n");
   }
 
-  fflush(m_pLogFile);
+  std::fflush(m_pLogFile);
 
   m_oTM.start();
 
@@ -179,45 +183,50 @@ bool Logger::_Initialize() {
 }
 
 bool Logger::Initialize() {
+  std::unique_lock<std::timed_mutex> lock(m_oLoggerCS, std::defer_lock);
   if (m_pLogFile)
     return true;
 
-  CSingleLock lock(&m_oLoggerCS);
   bool ok = false;
 
-  if (lock.Lock(500)) {
+  if (lock.try_lock_for(std::chrono::milliseconds(500))) {
     ok = _Initialize();
-    lock.Unlock();
-  } else
-    OutputDebugStringA("could not lock Logger during initialization\n"),
-        AmiError("could not lock Logger during initialization");
+  } else {
+#ifdef _WIN32
+    OutputDebugStringA("could not lock Logger during initialization\n");
+#endif
+    AmiError("could not lock Logger during initialization");
+  }
 
   return ok;
 }
 
-void Logger::PushMessage(const char *message, int type) {
+void Logger::PushMessage(std::string_view message, int type) {
   if ((type & m_iMsgMask) != type)
     return; // pass only when all types are in MsgMask
   if (!m_pLogFile && !Initialize())
     return;
 
-  QWORD Elapsed = m_oTM.getTimeDiff();
+  auto Elapsed = m_oTM.getTimeDiff();
 
-  CStringA msg;
-  msg.Format("%8lld.%2.2lld ms (TID: %8.8x) : %s\n", Elapsed / 1000,
-             (Elapsed / 10) % 100, GetCurrentThreadId(), message);
+  auto tid = 1;//std::this_thread::get_id();
 
-  CSingleLock lock(&m_oLoggerCS);
+  std::string msg;
+  msg = std::format("{}.{:02} ms (TID: {}) : {}\n", Elapsed / 1000, (Elapsed / 10) % 100, tid, message);
 
-  if (lock.Lock(100)) // make sure that there is no race
-  {
-    fputs(msg, m_pLogFile);
-    lock.Unlock();
+  std::unique_lock<std::timed_mutex> lock(m_oLoggerCS, std::defer_lock);
+
+  if (lock.try_lock_for(std::chrono::milliseconds(100))) {
+    std::fputs(msg.c_str(), m_pLogFile);
+    lock.unlock();
 
     if (m_bFlush)
-      fflush(m_pLogFile);
-  } else
-    OutputDebugStringA("could not lock Logger\n"),
-        fputs("could not lock Logger\n", stderr),
-        AmiError("could not lock Logger");
+      std::fflush(m_pLogFile);
+  } else {
+#ifdef _WIN32
+    OutputDebugStringA("could not lock Logger\n");
+#endif
+    std::fputs("could not lock Logger\n", stderr);
+    AmiError("could not lock Logger");
+  }
 }

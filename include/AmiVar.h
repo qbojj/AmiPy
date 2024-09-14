@@ -1,5 +1,10 @@
 #pragma once
 
+#include <Plugin_Extended.h>
+#include <Python.h>
+
+#include <cstring>
+
 /////////////////////////////////////////////////////////////////////////////////////
 // enum TYPES { VALUE, ARRAY, TEXT, MATRIX };
 
@@ -28,16 +33,16 @@ inline AmiVar SetVal(float data) {
 
 inline AmiVar SetArr(const float *data) {
   AmiVar v = gSite.AllocArrayResult();
-  memcpy(v.array, data, gSite.GetArraySize() * sizeof(float));
+  std::memcpy(v.array, data, gSite.GetArraySize() * sizeof(float));
   return v;
 }
 
 inline AmiVar SetTxt(const char *data) {
   AmiVar v;
   v.type = VAR_STRING;
-  int size = (int)strlen(data) + 1;
+  auto size = std::strlen(data) + 1;
   v.string = (char *)gSite.Alloc(size * sizeof(char));
-  memcpy(v.string, data, size);
+  std::memcpy(v.string, data, size);
   return v;
 }
 
@@ -45,15 +50,15 @@ AmiVar SetMat(int rows, int cols, const float *data) {
   AmiVar v;
   v.type = VAR_MATRIX;
 
-  UINT DataSize = rows * cols * sizeof(float);
+  auto DataSize = rows * cols * sizeof(float);
   Matrix *m = (Matrix *)gSite.Alloc(2 * sizeof(int) + DataSize);
 
   m->rows = rows;
   m->cols = cols;
   if (data)
-    memcpy(m->data, data, DataSize);
+    std::memcpy(m->data, data, DataSize);
   else
-    memset(m->data, 0, DataSize);
+    std::memset(m->data, 0, DataSize);
 
   v.matrix = m;
 

@@ -1,52 +1,48 @@
-#include "StdAfx.h"
-
 #include "AmiPyConversions.h"
 
 #include "AmiPyFunctions.h"
-#include "AmiPyPython.h"
 #include "AmiPyIsolation.h"
+#include "AmiPyPython.h"
+#include "Logger.h"
 
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+
+#ifdef _WIN32
 #include <map>
+#include <windows.h>
+#endif
+
+#include <semaphore>
+#include <string>
+#include <thread>
+#include <cassert>
+#include <utility>
 
 std::atomic_bool g_bIsClosing = false;
 
 PyInterpreterState *g_pMainIS;
 static PyThreadState *pMainTS;
 
-static bool bInitError = false;
-static CStringA oInitErrorMsg = "";
+static std::atomic<bool> bInitError = false;
+static std::string oInitErrorMsg = "";
 
-static volatile unsigned int bInitializing = 0;
-static volatile bool bProperlyInitialized = false;
+static std::once_flag bInitializingFlag;
+static std::atomic<bool> bProperlyInitialized = false;
 
-static CEvent oClose(FALSE, TRUE);
-static CEvent oInitialized(FALSE, TRUE); // by default wait & manual
+static std::binary_semaphore oClose{0};
+static std::binary_semaphore oInitialized{0};
 
-static CWinThread *pMainPythonThread;
+static std::timed_mutex oMainPythonThreadCS;
 
-#define MAIN_PYTHON_THREAD_STACK_SIZE (1 << 25) // 1 MB
-
-static volatile unsigned int bFinalizing = 0;
+static std::atomic<unsigned int> bFinalizing = 0;
 
 static bool StartAmiPy();
 static bool EndAmiPy();
 
-static CStringA GetLastErrorString() {
-  LPSTR str;
-  FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                     FORMAT_MESSAGE_IGNORE_INSERTS,
-                 NULL, GetLastError(),
-                 MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&str, 0,
-                 NULL);
-
-  CStringA msg(str);
-  LocalFree(str);
-
-  return msg;
-}
-
-#define VAL_AND_NAME(v)                                                        \
-  { v, #v }
+#ifdef _WIN32
+#define VAL_AND_NAME(v) {v, #v}
 
 static const std::map<DWORD, const char *> exception_names{
     VAL_AND_NAME(EXCEPTION_ACCESS_VIOLATION),
@@ -75,32 +71,34 @@ static const std::map<DWORD, const char *> exception_names{
 };
 
 static void try_init_except(char msgBuff[1024], unsigned long ec) {
-    auto it = exception_names.find(ec);
+  auto it = exception_names.find(ec);
 
-    sprintf_s(msgBuff, sizeof(msgBuff),
-        "Exception during python initialization (%s)",
-        it != exception_names.end() ? it->second : "unknown");
+  sprintf_s(msgBuff, sizeof(msgBuff),
+            "Exception during python initialization (%s)",
+            it != exception_names.end() ? it->second : "unknown");
 
-    OutputDebugStringA(msgBuff);
-    gLogger(msgBuff, Logger::MSG_ERROR);
+  OutputDebugStringA(msgBuff);
+  gLogger(msgBuff, Logger::MSG_ERROR);
 
-    bProperlyInitialized = false;
-    bInitError = true;
-    oInitErrorMsg = msgBuff;
+  bProperlyInitialized = false;
+  bInitError = true;
+  oInitErrorMsg = msgBuff;
 }
 
 static void try_init(char msgBuff[1024]) {
-    __try {
-        bProperlyInitialized = StartAmiPy();
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        try_init_except(msgBuff, GetExceptionCode());
-    }
+  __try {
+    bProperlyInitialized = StartAmiPy();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    try_init_except(msgBuff, GetExceptionCode());
+  }
 }
+#else
+static void try_init(char msgBuff[1024]) {
+  bProperlyInitialized = StartAmiPy();
+}
+#endif
 
-static UINT MainPythonThreadExecutor(LPVOID pParam) {
-  (void)pParam;
-
+static void MainPythonThreadExecutor(std::unique_lock<std::timed_mutex>) {
   gLogger("MainPythonThread started", Logger::MSG_DEBUG);
 
   char msgBuff[1024] = "";
@@ -108,42 +106,21 @@ static UINT MainPythonThreadExecutor(LPVOID pParam) {
 
   gLogger("Setting initialized event", Logger::MSG_DEBUG);
 
-  if (!oInitialized.SetEvent()) {
-    OutputDebugStringA("Cannot set initialized event\n");
-    gLogger("Error: Cannot set initialized event", Logger::MSG_ERROR);
-
-    gLogger("MainPythonThread abnormally stopped", Logger::MSG_ERROR);
-    return 1;
-  }
+  oInitialized.release();
 
   if (!bProperlyInitialized) {
     gLogger(
         "AmiPy was not initialized successfully => stopping MainPythonThread",
         Logger::MSG_WARNING);
-    return 1;
+    return;
   }
 
   gLogger("waiting for close event", Logger::MSG_DEBUG);
 
-  DWORD ret = ::WaitForSingleObject(oClose, INFINITE);
-
-  if (ret != WAIT_OBJECT_0) {
-    sprintf_s(msgBuff, sizeof(msgBuff), "Error: waiting for close event: %s",
-              ret == WAIT_ABANDONED ? "abandoned"
-              : ret == WAIT_TIMEOUT ? "timeout"
-              : ret == WAIT_FAILED  ? "failed"
-                                    : "");
-
-    OutputDebugStringA(msgBuff);
-    gLogger(msgBuff, Logger::MSG_ERROR);
-
-    return false;
-  }
+  oClose.acquire();
 
   gLogger("close event recived", Logger::MSG_DEBUG);
-
   gLogger("MainPythonThread stopped", Logger::MSG_DEBUG);
-  return 0;
 }
 
 static inline bool InitAmiPyModule() {
@@ -161,43 +138,43 @@ int PyArray_RUNTIME_VERSION;
  * On exceedingly few platforms these sizes may not match, in which case
  * We do not support older NumPy versions at all.
  */
-static_assert(sizeof(Py_ssize_t) == sizeof(Py_intptr_t) || PyArray_RUNTIME_VERSION < NPY_2_0_API_VERSION,
-    "module compiled against NumPy 2.0 but running on NumPy 1.x. "
-    "Unfortunately, this is not supported on niche platforms where "
-    "`sizeof(size_t) != sizeof(inptr_t)`."
-    );
+static_assert(sizeof(Py_ssize_t) == sizeof(Py_intptr_t) ||
+                  PyArray_RUNTIME_VERSION < NPY_2_0_API_VERSION,
+              "module compiled against NumPy 2.0 but running on NumPy 1.x. "
+              "Unfortunately, this is not supported on niche platforms where "
+              "`sizeof(size_t) != sizeof(inptr_t)`.");
 
 static inline bool InitArrayAPI() {
   if (PyArray_API != NULL)
     return true;
 
   int st;
-  PyObject* numpy = PyImport_ImportModule("numpy._core._multiarray_umath");
+  PyObject *numpy = PyImport_ImportModule("numpy._core._multiarray_umath");
   if (numpy == NULL && PyErr_ExceptionMatches(PyExc_ModuleNotFoundError)) {
-      PyErr_Clear();
-      numpy = PyImport_ImportModule("numpy.core._multiarray_umath");
+    PyErr_Clear();
+    numpy = PyImport_ImportModule("numpy.core._multiarray_umath");
   }
 
   if (numpy == NULL) {
-      return false;
+    return false;
   }
 
-  PyObject* c_api = PyObject_GetAttrString(numpy, "_ARRAY_API");
+  PyObject *c_api = PyObject_GetAttrString(numpy, "_ARRAY_API");
   Py_DECREF(numpy);
   if (c_api == NULL) {
-      return false;
+    return false;
   }
 
   if (!PyCapsule_CheckExact(c_api)) {
-      PyErr_SetString(PyExc_RuntimeError, "_ARRAY_API is not PyCapsule object");
-      Py_DECREF(c_api);
-      return false;
+    PyErr_SetString(PyExc_RuntimeError, "_ARRAY_API is not PyCapsule object");
+    Py_DECREF(c_api);
+    return false;
   }
-  PyArray_API = (void**)PyCapsule_GetPointer(c_api, NULL);
+  PyArray_API = (void **)PyCapsule_GetPointer(c_api, NULL);
   Py_DECREF(c_api);
   if (PyArray_API == NULL) {
-      PyErr_SetString(PyExc_RuntimeError, "_ARRAY_API is NULL pointer");
-      return false;
+    PyErr_SetString(PyExc_RuntimeError, "_ARRAY_API is NULL pointer");
+    return false;
   }
 
   /*
@@ -206,24 +183,26 @@ static inline bool InitArrayAPI() {
    * purposes.
    */
   if (NPY_VERSION < PyArray_GetNDArrayCVersion()) {
-      PyErr_Format(PyExc_RuntimeError, "module compiled against "\
-          "ABI version 0x%x but this version of numpy is 0x%x", \
-          (int)NPY_VERSION, (int)PyArray_GetNDArrayCVersion());
-      return false;
+    PyErr_Format(PyExc_RuntimeError,
+                 "module compiled against "
+                 "ABI version 0x%x but this version of numpy is 0x%x",
+                 (int)NPY_VERSION, (int)PyArray_GetNDArrayCVersion());
+    return false;
   }
   PyArray_RUNTIME_VERSION = (int)PyArray_GetNDArrayCFeatureVersion();
   if (NPY_FEATURE_VERSION > PyArray_RUNTIME_VERSION) {
-      PyErr_Format(PyExc_RuntimeError,
-          "module was compiled against NumPy C-API version 0x%x "
-          "(NumPy " NPY_FEATURE_VERSION_STRING ") "
-          "but the running NumPy has C-API version 0x%x. "
-          "Check the section C-API incompatibility at the "
-          "Troubleshooting ImportError section at "
-          "https://numpy.org/devdocs/user/troubleshooting-importerror.html"
-          "#c-api-incompatibility "
-          "for indications on how to solve this problem.",
-          (int)NPY_FEATURE_VERSION, PyArray_RUNTIME_VERSION);
-      return false;
+    PyErr_Format(
+        PyExc_RuntimeError,
+        "module was compiled against NumPy C-API version 0x%x "
+        "(NumPy " NPY_FEATURE_VERSION_STRING ") "
+        "but the running NumPy has C-API version 0x%x. "
+        "Check the section C-API incompatibility at the "
+        "Troubleshooting ImportError section at "
+        "https://numpy.org/devdocs/user/troubleshooting-importerror.html"
+        "#c-api-incompatibility "
+        "for indications on how to solve this problem.",
+        (int)NPY_FEATURE_VERSION, PyArray_RUNTIME_VERSION);
+    return false;
   }
 
   /*
@@ -232,34 +211,35 @@ static inline bool InitArrayAPI() {
    */
   st = PyArray_GetEndianness();
   if (st == NPY_CPU_UNKNOWN_ENDIAN) {
-      PyErr_SetString(PyExc_RuntimeError,
-          "FATAL: module compiled as unknown endian");
-      return false;
+    PyErr_SetString(PyExc_RuntimeError,
+                    "FATAL: module compiled as unknown endian");
+    return false;
   }
 #if NPY_BYTE_ORDER == NPY_BIG_ENDIAN
   if (st != NPY_CPU_BIG) {
-      PyErr_SetString(PyExc_RuntimeError,
-          "FATAL: module compiled as big endian, but "
-          "detected different endianness at runtime");
-      return false;
+    PyErr_SetString(PyExc_RuntimeError,
+                    "FATAL: module compiled as big endian, but "
+                    "detected different endianness at runtime");
+    return false;
   }
 #elif NPY_BYTE_ORDER == NPY_LITTLE_ENDIAN
   if (st != NPY_CPU_LITTLE) {
-      PyErr_SetString(PyExc_RuntimeError,
-          "FATAL: module compiled as little endian, but "
-          "detected different endianness at runtime");
-      return false;
+    PyErr_SetString(PyExc_RuntimeError,
+                    "FATAL: module compiled as little endian, but "
+                    "detected different endianness at runtime");
+    return false;
   }
 #endif
 
-  CStringA msg;
-  msg.Format("Loaded NumPy version 0x%x", PyArray_RUNTIME_VERSION);
+  std::string msg =
+      std::format("Loaded NumPy version 0x{:x}", PyArray_RUNTIME_VERSION);
+#ifdef _WIN32
   OutputDebugStringA(msg);
+#endif
   gLogger(msg, Logger::MSG_MAIN_EVENTS);
 
   return true;
 }
-
 
 #define STDERR_FILE "./stderr.txt"
 #define STDOUT_FILE "./stdout.txt"
@@ -269,9 +249,9 @@ static bool RedirectStdIO() {
   if (bRedirectedStdIO)
     return true;
 
-  if (!freopen(STDERR_FILE, "w", stderr))
+  if (!std::freopen(STDERR_FILE, "w", stderr))
     return false;
-  if (!freopen(STDOUT_FILE, "w", stdout)) {
+  if (!std::freopen(STDOUT_FILE, "w", stdout)) {
     fclose(stderr);
     return false;
   }
@@ -284,47 +264,55 @@ static bool CloseRedirectedStdIO() {
     return true;
   bRedirectedStdIO = false;
 
-  fclose(stderr);
-  fclose(stdout);
+  std::fclose(stderr);
+  std::fclose(stdout);
 
   return true;
 }
 
+#ifdef _WIN32
 #define INIT_ERROR_AND_EXIT(msg)                                               \
   {                                                                            \
     bInitError = true;                                                         \
     oInitErrorMsg = msg;                                                       \
-    OutputDebugStringA(oInitErrorMsg);                                         \
+    OutputDebugStringA(oInitErrorMsg.data());                                  \
     gLogger("Error: " + oInitErrorMsg, Logger::MSG_ERROR);                     \
     return false;                                                              \
   }
+#else
+#define INIT_ERROR_AND_EXIT(msg)                                               \
+  {                                                                            \
+    bInitError = true;                                                         \
+    oInitErrorMsg = msg;                                                       \
+    gLogger("Error: " + oInitErrorMsg, Logger::MSG_ERROR);                     \
+    return false;                                                              \
+  }
+#endif
 
-inline static void FormatPyErr(CStringA &msg) {
+inline static void FormatPyErr(std::string &msg) {
   msg += '\n' + AmiPyPythonErrorToString();
 }
 
 static unsigned int GetPythonVersionHex() {
-  CStringA versionValStr = Py_GetVersion();
+  std::string versionValStr = Py_GetVersion();
 
-  int end = versionValStr.Find(' ');
-  if (end != -1)
-    versionValStr.Truncate(end);
-  versionValStr.MakeLower();
+  int end = versionValStr.find(' ');
+  versionValStr = versionValStr.substr(0, end);
+  for (char &c : versionValStr)
+    c = std::tolower(c);
 
-  int numOfDots = 0;
-  for (int pos = -1; (pos = versionValStr.Find('.', pos + 1)) != -1;
-       numOfDots++)
-    ;
+  int numOfDots = std::count(versionValStr.begin(), versionValStr.end(), '.');
 
   int maj, min, mic = 0, ser = 0;
   char rel_lev = 'f';
 
   if (numOfDots == 1) {
-    if (sscanf(versionValStr, "%d.%d%c%d", &maj, &min, &rel_lev, &ser) < 2)
+    if (std::sscanf(versionValStr.data(), "%d.%d%c%d", &maj, &min, &rel_lev,
+                    &ser) < 2)
       return 0;
   } else if (numOfDots == 2) {
-    if (sscanf(versionValStr, "%d.%d.%d%c%d", &maj, &min, &mic, &rel_lev,
-               &ser) < 3)
+    if (std::sscanf(versionValStr.data(), "%d.%d.%d%c%d", &maj, &min, &mic,
+                    &rel_lev, &ser) < 3)
       return 0;
   } else
     return 0;
@@ -377,8 +365,9 @@ static bool StartAmiPy() {
   PyEval_RestoreThread(pMainTS);
 
   if (!InitArrayAPI()) {
-    CStringA msg = "cannot import array API (no numpy?) [numpy.core.multiarray "
-                   "failed to import]";
+    std::string msg =
+        "cannot import array API (no numpy?) [numpy.core.multiarray "
+        "failed to import]";
 
     FormatPyErr(msg);
     INIT_ERROR_AND_EXIT(msg);
@@ -406,10 +395,12 @@ static bool EndAmiPy() {
     ret = true;
   }
 
-  if (!ret)
-    gLogger("Error: Cannot finalize Python", Logger::MSG_ERROR),
-        OutputDebugStringA("Error: Cannot finalize Python\n");
-  else
+  if (!ret) {
+    gLogger("Error: Cannot finalize Python", Logger::MSG_ERROR);
+#ifdef _WIN32
+    OutputDebugStringA("Error: Cannot finalize Python\n");
+#endif
+  } else
     gLogger("Python Ended", Logger::MSG_MAIN_EVENTS);
 
   CloseRedirectedStdIO();
@@ -422,44 +413,32 @@ bool EnsureInitialized() {
     return false;
   if (bProperlyInitialized)
     return true;
+  
+  gLogger.Initialize();
 
-  if (::InterlockedCompareExchange(&bInitializing, 1, 0) == 0) {
-    gLogger.Initialize();
-
+  std::call_once(bInitializingFlag, []{
     gLogger("starting MainPythonThread thread", Logger::MSG_DEBUG);
-    pMainPythonThread =
-        ::AfxBeginThread(MainPythonThreadExecutor, 0,
-                         MAIN_PYTHON_THREAD_STACK_SIZE, CREATE_SUSPENDED);
-
-    if (pMainPythonThread) {
-      pMainPythonThread->m_bAutoDelete = false;
-      pMainPythonThread->ResumeThread();
-    } else {
-      bInitError = true;
-      oInitErrorMsg = "MainPythonThread could not be started\n";
-    }
-  }
+    std::thread{MainPythonThreadExecutor, std::unique_lock{oMainPythonThreadCS}}.detach();
+  });
 
   if (bFinalizing)
     return false;
-  DWORD ret = ::WaitForSingleObject(oInitialized, 20000);
 
-  if (ret != WAIT_OBJECT_0) {
-    CStringA msg = "Error: waiting for initialized event: ";
+  if (oInitialized.try_acquire_for(std::chrono::seconds(20))) {
+    std::string msg = "Error: waiting for initialized event: timeout";
 
-    msg += ret == WAIT_ABANDONED ? "abandoned"
-           : ret == WAIT_TIMEOUT ? "timeout"
-           : ret == WAIT_FAILED  ? "failed"
-                                 : "";
-
-    ::OutputDebugStringA(msg);
+#ifdef _WIN32
+    OutputDebugStringA(msg.data());
+#endif
     gLogger("Error: " + msg, Logger::MSG_ERROR);
 
     return false;
   }
 
+  oInitialized.release();
+
   if (bInitError) {
-    PRINT_ERROR(oInitErrorMsg);
+    PRINT_ERROR(oInitErrorMsg.data());
     return false;
   }
 
@@ -467,48 +446,38 @@ bool EnsureInitialized() {
 }
 
 bool SaveClose() {
-  if (bInitializing && bProperlyInitialized &&
-      ::InterlockedCompareExchange(&bFinalizing, 1, 0) == 0) {
-    if (!pMainPythonThread)
-      return true;
+  bFinalizing = true;
+  
+  bool never_initialized = false;
+  std::call_once(bInitializingFlag, [&]{
+    never_initialized = true;
+  });
 
-    if (!oClose.SetEvent()) {
-      OutputDebugStringA("Cannot set close event\n");
-      gLogger("Error: Cannot set close event", Logger::MSG_ERROR);
+  if (never_initialized || !bProperlyInitialized)
+    return true;
 
-      return false;
-    }
+  oClose.release();
+  gLogger("waiting for close of MainPythonThread", Logger::MSG_DEBUG);
 
-    gLogger("waiting for close of MainPythonThread", Logger::MSG_DEBUG);
-    DWORD ret = ::WaitForSingleObject(*pMainPythonThread, 10000);
+  if (!oMainPythonThreadCS.try_lock_for(std::chrono::seconds(30))) {
+    std::string msg = "Error: python thread did not close: timeout";
 
-    if (ret != WAIT_OBJECT_0) {
-      CStringA msg = "Error: wait for close of MainPythonThread: ";
+#ifdef _WIN32
+    OutputDebugStringA(msg.data());
+#endif
+    gLogger(msg, Logger::MSG_ERROR);
 
-      msg += ret == WAIT_ABANDONED ? "abandoned"
-             : ret == WAIT_TIMEOUT ? "timeout"
-             : ret == WAIT_FAILED  ? "failed: "
-                                   : "";
-
-      if (ret == WAIT_FAILED)
-        msg += GetLastErrorString();
-
-      OutputDebugStringA(msg);
-      gLogger(msg, Logger::MSG_ERROR);
-
-      return false;
-    }
-
-    gLogger("MainPythonThread stop recived", Logger::MSG_DEBUG);
-    delete pMainPythonThread;
+    return false;
   }
+
+  oMainPythonThreadCS.unlock();
 
   return true;
 }
 
 void ForceClose() {
-  TerminateThread(*pMainPythonThread, (DWORD)-1);
-  delete pMainPythonThread;
+  bFinalizing = true;
+  // we cannot do anything else
 }
 
 PyObject *AmiVarToObj(AmiVar variable) {
@@ -616,18 +585,18 @@ AmiVar ObjToAmiVar(PyObject *variable) {
     switch (ndim) {
     case 1:
       // AFL Array
-      ASSERT(bArray);
+      assert(bArray);
       Var = SetArr((float *)PyArray_DATA(pConverted));
       break;
     case 2:
       // AFL Matrix
-      ASSERT(bMatrix);
+      assert(bMatrix);
       Var = SetMat((int)PyArray_DIM(pObj, 0), (int)PyArray_DIM(pObj, 1),
                    (float *)PyArray_DATA(pConverted));
       break;
 
     default:
-      __assume(0); // checked for it before
+      std::unreachable(); // checked for it before
     }
 
     Py_DecRef((PyObject *)pConverted);

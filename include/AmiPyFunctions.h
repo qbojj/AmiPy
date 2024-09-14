@@ -1,23 +1,9 @@
 #pragma once
-#include "AmiVar.h"
 
-/*
-class AmiPyException : public CException
-{
-public:
-        AmiPyException( const char *message ) : m_szMessage( message ) {};
-        ~AmiPyException() {};
+#include <Plugin_Extended.h>
+#include <string>
 
-        virtual BOOL GetErrorMessage(
-                LPTSTR	lpszError,
-                UINT	nMaxError,
-                UINT	*pnHelpContext = NULL ) const;
-
-protected:
-        CStringA m_szMessage;
-};*/
-
-CStringA AmiPyPythonErrorToString();
+std::string AmiPyPythonErrorToString();
 void AmiPyPrintError(const char *BaseMsg);
 
 AmiVar AmiPyLoadFromFile(int iNumArgs, AmiVar *pArgs);

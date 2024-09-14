@@ -1,5 +1,3 @@
-#include "StdAfx.h"
-
 #include "AmiPyPython.h"
 
 #include "AmiPyConversions.h"

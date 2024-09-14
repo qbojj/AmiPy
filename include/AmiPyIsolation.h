@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Python.h>
+
 // must hold GIL
 void AmiPyIsolation_ClearAll();
 

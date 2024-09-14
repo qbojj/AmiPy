@@ -1,9 +1,7 @@
 #pragma once
 
-#include "StdAfx.h"
+#include <Python.h>
 
-#if PY_MAJOR_VERSION >= 3
+static_assert(PY_MAJOR_VERSION >= 3, "AmiPy only supports Python 3");
+
 PyObject *PyInit_AmiPy(void);
-#else
-#error AmiPy doesn't support Python 2
-#endif

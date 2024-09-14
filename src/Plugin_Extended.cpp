@@ -23,8 +23,6 @@
 // in the user documentation and internal comments to the code.
 ///////////////////////////////////////////////////////////////////////
 
-#include "StdAfx.h"
-
 #include "Plugin_Extended.h"
 
 #include "AmiPyConversions.h"
@@ -42,6 +40,9 @@
 #define PLUGIN_VERSION                                                         \
   (AMIPY_PLUGIN_VERSION_MAJOR * 10000 + AMIPY_PLUGIN_VERSION_MINOR * 100 +     \
    AMIPY_PLUGIN_VERSION_RELEASE)
+
+static constexpr int TRUE = 1;
+static constexpr int FALSE = 0;
 
 ////////////////////////////////////////
 // Data section
@@ -105,5 +106,5 @@ PLUGINAPI int Release(void) {
     ForceClose();
   }
 
-  return 1;
+  return TRUE;
 };

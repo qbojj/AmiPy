@@ -1,5 +1,8 @@
 #pragma once
-#include "AmiVar.h"
+
+#include <Plugin_Extended.h>
+#include <Python.h>
+
 #include <atomic>
 
 ////////////////////////////////////////////////////////////////////////////////

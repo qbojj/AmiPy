@@ -1,5 +1,3 @@
-#include "StdAfx.h"
-
 #include "AmiPyFunctions.h"
 
 #include "AmiPyConversions.h"
@@ -7,8 +5,11 @@
 #include "AmiPyPython.h"
 #include "AmiPyRun.h"
 #include "AmiVar.h"
+#include "Logger.h"
 
-static CStringA AmiPyPythonExceptionOnlyToString(PyObject *type,
+#include <format>
+
+static std::string AmiPyPythonExceptionOnlyToString(PyObject *type,
                                                  PyObject *value,
                                                  PyObject *tracebackModule) {
   assert(type);
@@ -38,7 +39,7 @@ static CStringA AmiPyPythonExceptionOnlyToString(PyObject *type,
     return "* cannot acquire exception info\n";
   }
 
-  CStringA ErrMsg;
+  std::string ErrMsg;
 
   Py_ssize_t siz = PyList_Size(ExcStrs);
 
@@ -47,14 +48,14 @@ static CStringA AmiPyPythonExceptionOnlyToString(PyObject *type,
     if (!cur)
       ErrMsg += "* cannot get exception info string\n";
     else
-      ErrMsg += CStringA() + "* " + ASCIICapsule::FromObject(cur, false).Data();
+      ErrMsg += std::string{} + "* " + ASCIICapsule::FromObject(cur, false).Data();
   }
 
   Py_DecRef(ExcStrs);
   return ErrMsg;
 }
 
-static CStringA AmiPyPythonCallstackToString(PyObject *traceback,
+static std::string AmiPyPythonCallstackToString(PyObject *traceback,
                                              PyObject *tracebackModule) {
   assert(traceback);
   assert(tracebackModule);
@@ -62,7 +63,7 @@ static CStringA AmiPyPythonCallstackToString(PyObject *traceback,
   if (!traceback || !tracebackModule)
     return "";
 
-  CStringA TbMsg = "* callstack:\n";
+  std::string TbMsg = "* callstack:\n";
 
   PyObject *extract_tb = PyObject_GetAttrString(tracebackModule, "extract_tb");
 
@@ -106,13 +107,13 @@ static CStringA AmiPyPythonCallstackToString(PyObject *traceback,
       if (filename && PyUnicode_Check(filename) && lineno &&
           PyLong_Check(lineno) && name && PyUnicode_Check(name) && line &&
           PyUnicode_Check(line)) {
-        TbMsg.AppendFormat("* * File: '%s', line %-3d (in %s)\n",
+        TbMsg += std::format("* * File: '{}', line {:<3} (in {})\n",
                            ASCIICapsule::FromUnicode(filename, false).Data(),
                            PyLong_AsLong(lineno),
                            ASCIICapsule::FromUnicode(name, false).Data());
 
         if (line != Py_None)
-          TbMsg += CStringA() + "* * * " +
+          TbMsg += std::string{} + "* * * " +
                    ASCIICapsule::FromUnicode(line, false).Data() + "\n";
       } else
         TbMsg += "* * Invalid FrameSummary: filename/lineno/name/line is NULL "
@@ -136,7 +137,7 @@ static CStringA AmiPyPythonCallstackToString(PyObject *traceback,
   return TbMsg;
 }
 
-CStringA AmiPyPythonErrorToString() {
+std::string AmiPyPythonErrorToString() {
   if (!PyErr_Occurred())
     return "* Python error did not occur\n";
 
@@ -154,7 +155,7 @@ CStringA AmiPyPythonErrorToString() {
     Py_DecRef(TracebackStr);
   }
 
-  CStringA ErrMsg;
+  std::string ErrMsg;
 
   if (!tracebackModule)
     ErrMsg +=
@@ -185,13 +186,16 @@ void AmiPyPrintError(const char *BaseMsg) {
 
   gLogger("Printing Py Error", Logger::MSG_DEBUG);
 
-  CStringA ErrMsg = CStringA() + BaseMsg + '\n' + AmiPyPythonErrorToString();
+  std::string ErrMsg = std::string{} + BaseMsg + '\n' + AmiPyPythonErrorToString();
 
   gLogger("ERROR: " + ErrMsg, Logger::MSG_ERROR);
 
+#ifdef _WIN32
   OutputDebugStringA(ErrMsg);
-  AmiPrintStr(ErrMsg);
-  AmiError(ErrMsg);
+#endif
+
+  AmiPrintStr(ErrMsg.data());
+  AmiError(ErrMsg.data());
 }
 
 // VA_ARGS call
@@ -205,7 +209,7 @@ AmiVar AmiPyEvalFunction(int iNumArgs, AmiVar *pArgs) {
     return AmiVar{VAR_FLOAT, EMPTY_VAL};
   }
 
-  gLogger(CStringA() + "Start PyEvalFunction( " + "\"" + pArgs[0].string +
+  gLogger(std::string() + "Start PyEvalFunction( " + "\"" + pArgs[0].string +
               "\", " + "\"" + pArgs[1].string + "\", ... )",
           Logger::MSG_FN_START);
 
@@ -280,7 +284,7 @@ AmiVar AmiPyLoadFromFile(int iNumArgs, AmiVar *pArgs) {
     return AmiVar{VAR_FLOAT, EMPTY_VAL};
   }
 
-  gLogger(CStringA() + "Start PyLoadFromFile( " + "\"" + pArgs[0].string +
+  gLogger(std::string{} + "Start PyLoadFromFile( " + "\"" + pArgs[0].string +
               "\", " + "\"" + pArgs[1].string + "\" )",
           Logger::MSG_FN_START);
 

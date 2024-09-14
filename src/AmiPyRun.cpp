@@ -1,8 +1,8 @@
-#include "StdAfx.h"
-
 #include "AmiPyRun.h"
 
 #include "AmiPyConversions.h"
+
+#include <cassert>
 
 #undef _Py_static_string_init
 #define _Py_static_string_init(name)                                           \
@@ -27,9 +27,9 @@ string GetFileContent(FILE *fh) {
 
 int AmiPyRun_File(FILE *fh, const char *fileName, PyObject *dict,
                   bool closeit) {
-  ASSERT(fh);
-  ASSERT(fileName != NULL);
-  ASSERT(dict != NULL);
+  assert(fh);
+  assert(fileName != NULL);
+  assert(dict != NULL);
 
   PyObject *res, *code, *f;
   string content;

@@ -351,3 +351,5 @@ MigrationBackup/
 
 ##################
 !deps/**/*
+
+build/
